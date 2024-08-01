@@ -2,33 +2,101 @@
 name: Release
 
 on:
-    push:
-        tags:
-            - "v*"
+    # push:
+    #     tags:
+    #         - "v*"
+    workflow_dispatch:
+        inputs:
+            goReleaserKey:
+                description: 'go releaser key'
+                required: true
+                type: string
+
+
 
 permissions:
     contents: write
+    id-token: write
+    packages: write
 
 jobs:
-    goreleaser:
+    prepare:
+        strategy:
+            matrix:
+                GOOS: [linux, windows, darwin, freebsd]
         runs-on: ubuntu-latest
         steps:
-            - name: Checkout
-              uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
-              with:
-                  # Allow goreleaser to access older tag information.
-                  fetch-depth: 0
-            - name: Setup Go
-              uses: actions/setup-go@0c52d547c9bc32b1aa3301fd7a9cb496313a4491 # v5.0.0
-              with:
-                  go-version-file: "go.mod"
-                  cache: true
-            - name: Import GPG key
-              uses: crazy-max/ghaction-import-gpg@111c56156bcc6918c056dbef52164cfa583dc549 # v5.2.0
-              id: import_gpg
-              with:
-                  gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
-                  passphrase: ${{ secrets.PASSPHRASE }}
+          - name: Checkout
+            uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+            with:
+                # Allow goreleaser to access older tag information.
+                fetch-depth: 0
+          - name: Setup Go
+            uses: actions/setup-go@0c52d547c9bc32b1aa3301fd7a9cb496313a4491 # v5.0.0
+            with:
+                go-version-file: "go.mod"
+                cache: true
+          - shell: bash
+            run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+          - name: OS Release Cache
+            id: cache
+            uses: actions/cache@v3
+            with:
+                path: dist/${{ matrix.GOOS }}
+                key: ${{ matrix.GOOS }}-${{ env.sha_short }}
+          - name: Prepare dist/${{ matrix.GOOS }}
+            uses: goreleaser/goreleaser-action@f82d6c1c344bcacabba2c841718984797f664a6b # v4.2.0
+            if: steps.cache.outputs.cache-hit != 'true'
+            with:
+                distribution: goreleaser-pro
+                version: latest
+                args: release --clean --split --timeout 1h
+            env:
+                GGOOS: ${{ matrix.GOOS }}
+                GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+                GORELEASER_KEY: ${{ inputs.goReleaserKey }}
+    release:
+        runs-on: ubuntu-latest
+        needs: prepare
+        steps:
+          - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+            with:
+                fetch-depth: 0
+          - uses: actions/setup-go@0c52d547c9bc32b1aa3301fd7a9cb496313a4491 # v5.0.0
+            with:
+                go-version-file: "go.mod"
+                cache: true
+
+            # copy the cashes from prepare
+          - shell: bash
+            run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+          - uses: actions/cache@v3
+            with:
+                path: dist/linux
+                key: linux-${{ env.sha_short }}
+          - uses: actions/cache@v3
+            with:
+                path: dist/darwin
+                key: darwin-${{ env.sha_short }}
+          - uses: actions/cache@v3
+            with:
+                path: dist/windows
+                key: windows-${{ env.sha_short }}
+          - uses: actions/cache@v3
+            with:
+                path: dist/freebsd
+                key: freebsd-${{ env.sha_short }}
+
+
+            # release
+          - uses: goreleaser/goreleaser-action@f82d6c1c344bcacabba2c841718984797f664a6b # v4.2.0
+            with:
+                distribution: goreleaser-pro
+                version: latest
+                args: continue --merge --timeout 1h
+            env:
+                GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+                GORELEASER_KEY: ${{ inputs.goReleaserKey }}
 
             # - name: Set up Python 3.10.5
             # uses: actions/setup-python@v4
@@ -43,7 +111,7 @@ jobs:
             #     pip install --upgrade pip
             #     pip install -r requirements.txt
 
-            # - name: Extract 
+            # - name: Extract
             # run: |
             #     source .venv/bin/activate
             #     python -m terraform_pytest.main patch
@@ -54,12 +122,3 @@ jobs:
             #         sdk_version=$(go list -m github.com/hashicorp/terraform-plugin-sdk/v2 | sed -n -e 's/^.* //p')
             #         go mod edit --replace github.com/hashicorp/terraform-plugin-sdk/v2=github.com/cloutierMat/terraform-plugin-sdk/v2@${sdk_version}-001
             #         go mod tidy
-
-            - name: Run GoReleaser
-              uses: goreleaser/goreleaser-action@f82d6c1c344bcacabba2c841718984797f664a6b # v4.2.0
-              with:
-                  args: release --clean --timeout 3h --parallelism 2
-              env:
-                  # GitHub sets the GITHUB_TOKEN secret automatically.
-                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-                  GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
